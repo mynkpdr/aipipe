@@ -589,6 +589,10 @@ Response:
 { "message": "Cost for user@example.com on 2025-04-18 set to 1.23" }
 ```
 
+### Handling Leaked Keys
+
+Edit `src/config.js` to add/change the user's salt (e.g., `"user@example.com": "random-xyz"`), commit, and deploy. This blocks / invalidates all their old tokens immediately.
+
 ## Architecture
 
 ### File Structure
