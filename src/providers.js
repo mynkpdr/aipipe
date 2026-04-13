@@ -3,6 +3,20 @@ import { updateHeaders } from "./utils.js";
 
 const { openai: openaiCost, gemini: geminiCost } = pricing;
 
+const withUser = (json, email) => email ? { ...json, user: email } : json;
+
+const withOpenAIObservability = (json, email) =>
+  email
+    ? {
+      ...json,
+      store: true,
+      metadata: {
+        ...(json.metadata && typeof json.metadata == "object" && !Array.isArray(json.metadata) ? json.metadata : {}),
+        aipipe_email: email,
+      },
+    }
+    : json;
+
 const tokenCost = (pricing, model, usage) => {
   const [input, output, audioInput = 0, audioOutput = 0] = pricing[model] ?? [0, 0, 0, 0];
 
@@ -64,21 +78,29 @@ const parseUsage = (u) =>
 
 export const providers = {
   openrouter: {
-    transform: async ({ path, request, env, nativeKey }) => ({
-      url: `https://openrouter.ai/api${path}`,
-      headers: updateHeaders(
-        request.headers,
-        [],
-        nativeKey
-          ? { Authorization: `Bearer ${nativeKey}` }
-          : {
-            Authorization: `Bearer ${env["OPENROUTER_API_KEY"]}`,
-            "HTTP-Referer": "https://aipipe.org/",
-            "X-Title": "AIPipe",
-          },
-      ),
-      ...(request.method == "POST" ? { body: await request.arrayBuffer() } : {}),
-    }),
+    transform: async ({ path, request, env, nativeKey, email }) => {
+      let body;
+      if (request.method == "POST") {
+        body = request.headers.get("Content-Type")?.includes("application/json")
+          ? JSON.stringify(withUser(await request.json(), email))
+          : await request.arrayBuffer();
+      }
+      return {
+        url: `https://openrouter.ai/api${path}`,
+        headers: updateHeaders(
+          request.headers,
+          [],
+          nativeKey
+            ? { Authorization: `Bearer ${nativeKey}` }
+            : {
+              Authorization: `Bearer ${env["OPENROUTER_API_KEY"]}`,
+              "HTTP-Referer": "https://aipipe.org/",
+              "X-Title": "AIPipe",
+            },
+        ),
+        ...(body ? { body } : {}),
+      };
+    },
     cost: async ({ model, usage }) => {
       // We can't look up https://openrouter.ai/api/v1/generation
       // It usually takes a few seconds to get updated. So we calculate the cost ourselves.
@@ -97,14 +119,14 @@ export const providers = {
   },
 
   openai: {
-    transform: async ({ path, request, env, nativeKey }) => {
+    transform: async ({ path, request, env, nativeKey, email }) => {
       let body;
       if (request.method == "POST") {
         // For chat POSTs, get { model }. Reject if model pricing unknown (unless using native key)
         if (!request.headers.get("Content-Type")?.includes("application/json")) {
           return { error: { code: 400, message: "Pass a JSON body with {model} so we can calculate cost" } };
         }
-        const json = await request.json();
+        let json = await request.json();
         // Skip pricing validation for native keys (user handles their own costs)
         if (!nativeKey && !openaiCost[json.model]) {
           return { error: { code: 400, message: `Model ${json.model} pricing unknown` } };
@@ -112,6 +134,9 @@ export const providers = {
 
         // If streaming chat completion, request usage in the response
         if (json.stream && path.includes("chat/completions")) json.stream_options = { include_usage: true };
+        if (path.includes("/chat/completions") || path.includes("/responses")) {
+          json = withOpenAIObservability(json, email);
+        } else if (path.includes("/embeddings")) json = withUser(json, email);
         body = JSON.stringify(json);
       }
       return {
@@ -173,7 +198,7 @@ export const providers = {
   },
 
   similarity: {
-    transform: async ({ request, env, nativeKey }) => {
+    transform: async ({ request, env, nativeKey, email }) => {
       try {
         // Error handling common
         const { docs, topics, model = "text-embedding-3-small", precision = 5 } = await request.json();
@@ -196,7 +221,7 @@ export const providers = {
             Authorization: `Bearer ${nativeKey ?? env["OPENAI_API_KEY"]}`,
             ...(!nativeKey && env["OPENAI_ORG_ID"] && { "OpenAI-Organization": env["OPENAI_ORG_ID"] }),
           },
-          body: JSON.stringify({ model, input: [...processedDocs, ...targetDocs] }),
+          body: JSON.stringify(withUser({ model, input: [...processedDocs, ...targetDocs] }, email)),
         });
 
         if (!response.ok) {

@@ -92,9 +92,91 @@ describe("OpenAI provider", () => {
     expect(body.choices?.[0]?.message?.content).toBe("hi");
     const forwardedPayload = parseBody(capturedBody);
     expect(forwardedPayload.stream_options).toEqual({ include_usage: true });
+    expect(forwardedPayload.store).toBe(true);
+    expect(forwardedPayload.metadata).toEqual({ aipipe_email: "test@example.com" });
 
     const usage = await readUsage(token);
     expect(usage.cost).toBeGreaterThan(0);
+  });
+
+  test("adds user email to responses metadata without dropping existing metadata", async () => {
+    const token = await createTestToken();
+    let capturedBody;
+
+    replyJson(fetchMock, {
+      origin: "https://api.openai.com",
+      path: "/v1/responses",
+      method: "POST",
+      assertRequest: (opts) => {
+        const headers = toHeaders(opts.headers);
+        expect(headers.get("authorization")).toBe(`Bearer ${env.OPENAI_API_KEY}`);
+        capturedBody = opts.body;
+      },
+      body: {
+        model: "gpt-5-nano",
+        usage: { input_tokens: 8, output_tokens: 4 },
+        output: [{ role: "assistant", content: [{ text: "hi" }] }],
+      },
+    });
+
+    const response = await workerFetch("/openai/v1/responses", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-5-nano",
+        input: "Hello",
+        metadata: { trace_id: "trace-123" },
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    const forwardedPayload = parseBody(capturedBody);
+    expect(forwardedPayload.store).toBe(true);
+    expect(forwardedPayload.metadata).toEqual({
+      trace_id: "trace-123",
+      aipipe_email: "test@example.com",
+    });
+  });
+
+  test("adds user email to embeddings requests", async () => {
+    const token = await createTestToken();
+    let capturedBody;
+
+    replyJson(fetchMock, {
+      origin: "https://api.openai.com",
+      path: "/v1/embeddings",
+      method: "POST",
+      assertRequest: (opts) => {
+        const headers = toHeaders(opts.headers);
+        expect(headers.get("authorization")).toBe(`Bearer ${env.OPENAI_API_KEY}`);
+        capturedBody = opts.body;
+      },
+      body: {
+        object: "list",
+        data: [{ object: "embedding", index: 0, embedding: [0.1, 0.2] }],
+        model: "text-embedding-3-small",
+        usage: { prompt_tokens: 8, total_tokens: 8 },
+      },
+    });
+
+    const response = await workerFetch("/openai/v1/embeddings", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "text-embedding-3-small",
+        input: "Hello",
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    const forwardedPayload = parseBody(capturedBody);
+    expect(forwardedPayload.user).toBe("test@example.com");
   });
 
   test("calculates cost for transcribe models with audio input tokens", async () => {
@@ -233,6 +315,7 @@ describe("OpenRouter provider", () => {
   test("streams chat completions and accrues cost", async () => {
     const token = await createTestToken("user@example.com", { useSalt: true });
     await seedUsage({});
+    let capturedBody;
 
     replyJson(fetchMock, {
       origin: "https://openrouter.ai",
@@ -257,6 +340,7 @@ describe("OpenRouter provider", () => {
       assertRequest: (opts) => {
         const headers = toHeaders(opts.headers);
         expect(headers.get("authorization")).toBe(`Bearer ${env.OPENROUTER_API_KEY}`);
+        capturedBody = opts.body;
       },
     });
 
@@ -274,6 +358,8 @@ describe("OpenRouter provider", () => {
 
     expect(response.status).toBe(200);
     await response.text();
+    const forwardedPayload = parseBody(capturedBody);
+    expect(forwardedPayload.user).toBe("user@example.com");
 
     const usage = await readUsage(token);
     expect(usage.cost).toBeGreaterThan(0);
@@ -281,9 +367,10 @@ describe("OpenRouter provider", () => {
 });
 
 describe("Gemini provider", () => {
-  test("rewrites authorization header and calculates cost for embeddings", async () => {
+  test("rewrites authorization header, leaves the request body unchanged, and calculates cost for embeddings", async () => {
     const token = await createTestToken("test@example.com");
     await seedUsage({});
+    let capturedBody;
 
     replyJson(fetchMock, {
       origin: "https://generativelanguage.googleapis.com",
@@ -297,6 +384,7 @@ describe("Gemini provider", () => {
       assertRequest: (opts) => {
         const headers = toHeaders(opts.headers);
         expect(headers.get("x-goog-api-key")).toBe(env.GEMINI_API_KEY);
+        capturedBody = opts.body;
       },
     });
 
@@ -314,6 +402,9 @@ describe("Gemini provider", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.usageMetadata?.promptTokenCount ?? body.usage?.prompt_tokens).toBeDefined();
+    expect(parseBody(capturedBody)).toEqual({
+      content: { role: "user", parts: [{ text: "hello" }] },
+    });
 
     const usage = await readUsage(token);
     expect(usage.cost).toBeGreaterThan(0);
@@ -324,6 +415,7 @@ describe("Similarity endpoint", () => {
   test("returns similarity matrix and charges usage", async () => {
     const token = await createTestToken();
     await seedUsage({});
+    let capturedBody;
 
     replyJson(fetchMock, {
       origin: "https://api.openai.com",
@@ -339,6 +431,7 @@ describe("Similarity endpoint", () => {
       assertRequest: (opts) => {
         const headers = toHeaders(opts.headers);
         expect(headers.get("authorization")).toBe(`Bearer ${env.OPENAI_API_KEY}`);
+        capturedBody = opts.body;
       },
     });
 
@@ -357,6 +450,8 @@ describe("Similarity endpoint", () => {
     const body = await response.json();
     expect(Array.isArray(body.similarity)).toBe(true);
     expect(body.similarity.length).toBe(2);
+    const forwardedPayload = parseBody(capturedBody);
+    expect(forwardedPayload.user).toBe("test@example.com");
 
     const usage = await readUsage(token);
     expect(usage.cost).toBeGreaterThan(0);

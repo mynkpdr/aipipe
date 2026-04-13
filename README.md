@@ -250,6 +250,9 @@ Response contains:
 }
 ```
 
+Observability: AI Pipe sets OpenRouter's `user` field to the authenticated email address from the AI Pipe token.
+You can inspect this in the OpenRouter activity view at <https://openrouter.ai/activity>.
+
 ### OpenAI API
 
 **`GET /openai/*`**: Proxy requests to OpenAI
@@ -329,6 +332,11 @@ Response contains:
 }
 ```
 
+Observability: AI Pipe adds `store: true` and `metadata.aipipe_email` to `/openai/v1/chat/completions`
+and `/openai/v1/responses`,
+and sets `user` on `/openai/v1/embeddings`. Check the OpenAI project dashboard at
+<https://platform.openai.com/logs>.
+
 ### Gemini API
 
 **`GET /geminiv1beta/*`**: Proxy requests to Google's Gemini API
@@ -374,9 +382,16 @@ Response contains:
 }
 ```
 
+Observability: Google's standard Gemini `generateContent` and `embedContent` request bodies do not currently expose
+an equivalent custom user/email field, so AI Pipe does not add one. If Gemini logging is enabled for the project,
+inspect `GenerateContent` and `StreamGenerateContent` requests in Google AI Studio at <https://aistudio.google.com/>.
+Gemini embeddings are not currently logged there.
+
 ### Similarity API
 
 **`POST /similarity`**: Calculate semantic similarity between documents and topics using embeddings.
+It uses OpenAI embeddings under the hood and forwards the authenticated email via OpenAI's `user` field, so these
+requests show up in the same OpenAI dashboard above.
 
 **Example**: Calculate similarity between documents and topics
 

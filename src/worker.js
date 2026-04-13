@@ -126,6 +126,7 @@ export default {
       path,
       request,
       env,
+      email,
       nativeKey: nativeKey ? token : null,
     });
     if (error) return jsonResponse(error);
