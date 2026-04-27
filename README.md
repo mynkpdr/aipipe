@@ -176,7 +176,7 @@ Notes:
 - When a user clicks "Sign in with Google" on the login page, Google's client library returns a JWT credential
 - The login page sends this credential to `/token?credential=...`
 - AI Pipe verifies the credential using Google's public keys
-- If valid, AI Pipe signs a new token containing the user's email (and optional salt) using `AIPIPE_SECRET`
+- If valid, AI Pipe signs a new token containing the user's email, optional salt, issuer/audience claims, and a 7-day expiry using `AIPIPE_SECRET`
 - Returns: `{ token, email ... }` where additional fields come from Google's profile
 
 ### OpenRouter API

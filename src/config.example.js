@@ -11,7 +11,7 @@ const budget = {
 };
 
 // If a user reports their key as stolen, add/change their salt to new random text.
-// That will invalidate their earlier tokens.
+// That will invalidate their earlier tokens. Use "@domain.com" or "*" for broader revocation.
 const salt = {
   "user@example.com": "random-text",
 };

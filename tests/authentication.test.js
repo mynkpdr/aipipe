@@ -1,4 +1,6 @@
 // @ts-check
+import { env } from "cloudflare:test";
+import * as jose from "jose";
 import { describe, expect, test } from "vitest";
 import { createTestToken, replyJson, setupWorkerFetchMock, workerFetch } from "./test-helpers.js";
 
@@ -16,6 +18,20 @@ describe("authentication and authorization", () => {
     const response = await workerFetch("/openrouter/v1/models", {
       headers: { Authorization: "Bearer invalid-token" },
     });
+    expect(response.status).toBe(401);
+    const body = await response.json();
+    expect(body.message.toLowerCase()).toContain("invalid");
+  });
+
+  test("rejects legacy JWTs without issuer, audience, and expiry claims", async () => {
+    const token = await new jose.SignJWT({ email: "test@example.com" })
+      .setProtectedHeader({ alg: "HS256" })
+      .sign(new TextEncoder().encode(env.AIPIPE_SECRET));
+
+    const response = await workerFetch("/openrouter/v1/models", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
     expect(response.status).toBe(401);
     const body = await response.json();
     expect(body.message.toLowerCase()).toContain("invalid");

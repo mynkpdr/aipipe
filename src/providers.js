@@ -71,19 +71,53 @@ const tokenCost = (pricing, model, usage) => {
 const parseUsage = (u) =>
   u
     ? {
+      ...u,
       prompt_tokens: u.prompt_tokens ?? u.promptTokenCount ?? u.input_tokens,
       completion_tokens: u.completion_tokens ?? u.candidatesTokenCount ?? u.output_tokens,
     }
     : undefined;
 
+const promptBytes = (json) => new TextEncoder().encode(JSON.stringify(json)).length;
+
+const estimateOpenrouterCost = async (json) => {
+  const { pricing } = await getOpenrouterModel(json.model);
+  if (!pricing) return;
+  return promptBytes(json) * Number(pricing.prompt ?? 0)
+    + Number(json.max_tokens ?? json.max_completion_tokens ?? 0) * Number(pricing.completion ?? 0)
+    + Number(pricing.request ?? 0);
+};
+
 export const providers = {
   openrouter: {
-    transform: async ({ path, request, env, nativeKey, email }) => {
+    transform: async ({ path, request, env, nativeKey, email, budget }) => {
       let body;
       if (request.method == "POST") {
-        body = request.headers.get("Content-Type")?.includes("application/json")
-          ? JSON.stringify(withUser(await request.json(), email))
-          : await request.arrayBuffer();
+        if (!request.headers.get("Content-Type")?.includes("application/json")) {
+          if (!nativeKey) {
+            return { error: { code: 400, message: "Pass a JSON body with {model} so we can calculate cost" } };
+          }
+          body = await request.arrayBuffer();
+        } else {
+          const json = await request.json();
+          if (!nativeKey && !json.model) {
+            return { error: { code: 400, message: "Pass a JSON body with {model} so we can calculate cost" } };
+          }
+          const estimatedCost = nativeKey ? undefined : await estimateOpenrouterCost(json);
+          if (!nativeKey && estimatedCost === undefined) {
+            return { error: { code: 400, message: `Model ${json.model} pricing unknown` } };
+          }
+          if (budget && estimatedCost > budget.remaining) {
+            return {
+              error: {
+                code: 429,
+                message: `Estimated request cost $${estimatedCost.toFixed(6)} exceeds remaining budget $${
+                  budget.remaining.toFixed(6)
+                }`,
+              },
+            };
+          }
+          body = JSON.stringify(withUser(json, email));
+        }
       }
       return {
         url: `https://openrouter.ai/api${path}`,
@@ -102,6 +136,10 @@ export const providers = {
       };
     },
     cost: async ({ model, usage }) => {
+      if (usage?.cost != null) {
+        const reportedCost = Number(usage.cost);
+        if (!Number.isNaN(reportedCost)) return { cost: reportedCost };
+      }
       // We can't look up https://openrouter.ai/api/v1/generation
       // It usually takes a few seconds to get updated. So we calculate the cost ourselves.
       const { pricing } = await getOpenrouterModel(model);

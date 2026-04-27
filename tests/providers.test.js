@@ -312,6 +312,85 @@ describe("OpenAI provider", () => {
 });
 
 describe("OpenRouter provider", () => {
+  test("uses OpenRouter reported usage cost when model aliases differ", async () => {
+    const token = await createTestToken("user@example.com", { useSalt: true });
+    await seedUsage({});
+
+    replyJson(fetchMock, {
+      origin: "https://openrouter.ai",
+      path: "/api/v1/models",
+      method: "GET",
+      body: {
+        data: [{
+          id: "anthropic/claude-sonnet-4.6",
+          pricing: { prompt: 0.000003, completion: 0.000015 },
+        }],
+      },
+    });
+
+    replyStream(fetchMock, {
+      origin: "https://openrouter.ai",
+      path: "/api/v1/chat/completions",
+      method: "POST",
+      events: [
+        'data: {"model":"anthropic/claude-4.6-sonnet-20260217","choices":[{"delta":{"content":"Hello"}}]}',
+        'data: {"model":"anthropic/claude-4.6-sonnet-20260217","usage":{"prompt_tokens":392824,"completion_tokens":1195,"cost":1.853994}}',
+        "data: [DONE]",
+      ],
+    });
+
+    const response = await workerFetch("/openrouter/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "anthropic/claude-sonnet-4.6",
+        stream: true,
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    await response.text();
+    const usage = await readUsage(token);
+    expect(usage.cost).toBeCloseTo(1.853994, 6);
+  });
+
+  test("rejects OpenRouter requests whose estimated prompt cost exceeds remaining budget", async () => {
+    const token = await createTestToken("test@example.com");
+    await seedUsage({});
+
+    replyJson(fetchMock, {
+      origin: "https://openrouter.ai",
+      path: "/api/v1/models",
+      method: "GET",
+      body: {
+        data: [{
+          id: "expensive/test-model",
+          pricing: { prompt: 1, completion: 0 },
+        }],
+      },
+    });
+
+    const response = await workerFetch("/openrouter/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "expensive/test-model",
+        messages: [{ role: "user", content: "This should be rejected before OpenRouter is called." }],
+      }),
+    });
+
+    expect(response.status).toBe(429);
+    const body = await response.json();
+    expect(body.message).toContain("Estimated request cost");
+  });
+
   test("streams chat completions and accrues cost", async () => {
     const token = await createTestToken("user@example.com", { useSalt: true });
     await seedUsage({});
@@ -334,7 +413,7 @@ describe("OpenRouter provider", () => {
       path: "/api/v1/chat/completions",
       method: "POST",
       events: [
-        "data: {\"model\":\"openrouter/test-model\",\"usage\":{\"prompt_tokens\":500,\"completion_tokens\":200}}",
+        'data: {"model":"openrouter/test-model","usage":{"prompt_tokens":500,"completion_tokens":200}}',
         "data: [DONE]",
       ],
       assertRequest: (opts) => {

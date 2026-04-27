@@ -21,8 +21,8 @@ new_sqlite_classes = ["AIPipeCost"]
 
 [observability]
 [observability.logs]
-enabled = false
+enabled = true
 invocation_logs = true
 
 [observability.traces]
-enabled = false
+enabled = true

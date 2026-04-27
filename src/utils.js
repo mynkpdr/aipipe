@@ -1,5 +1,9 @@
 import * as jose from "jose";
 
+export const AIPIPE_TOKEN_ISSUER = "https://aipipe.org";
+export const AIPIPE_TOKEN_AUDIENCE = "aipipe-api";
+export const AIPIPE_TOKEN_TTL = "7d";
+
 // Convert date to YYYY-MM-DD in UTC
 export const ymd = (date) => date.toISOString().slice(0, 10);
 
@@ -22,5 +26,9 @@ export function addCors(headers, request) {
 export async function createToken(email, secret, extraParams = {}) {
   return await new jose.SignJWT({ email, ...extraParams })
     .setProtectedHeader({ alg: "HS256" })
+    .setIssuedAt()
+    .setIssuer(AIPIPE_TOKEN_ISSUER)
+    .setAudience(AIPIPE_TOKEN_AUDIENCE)
+    .setExpirationTime(AIPIPE_TOKEN_TTL)
     .sign(new TextEncoder().encode(secret));
 }

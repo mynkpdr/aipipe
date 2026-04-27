@@ -1,6 +1,6 @@
 import * as jose from "jose";
 import { providers, sseTransform } from "./providers.js";
-import { addCors, createToken, updateHeaders } from "./utils.js";
+import { addCors, AIPIPE_TOKEN_AUDIENCE, AIPIPE_TOKEN_ISSUER, createToken, updateHeaders } from "./utils.js";
 export { AIPipeCost } from "./cost.js";
 
 // Load budget and salt from config.js, else config.example.js
@@ -65,7 +65,7 @@ export default {
     // Check if this is a native provider API key (bypasses AIPipe JWT validation and cost tracking)
     const nativeKey = isNativeApiKey(token);
 
-    let email, aiPipeCost;
+    let email, aiPipeCost, limit, days, usage;
 
     if (nativeKey) {
       // Native API keys bypass JWT validation and budget checks
@@ -85,7 +85,7 @@ export default {
       email = payload.email;
       const domain = "@" + email.split("@").at(-1);
       // Get user's budget limit and time period based on email || domain || default (*) || zero limit
-      const { limit, days } = budget[payload.email] ?? budget[domain] ?? budget["*"] ?? { limit: 0, days: 1 };
+      ({ limit, days } = budget[payload.email] ?? budget[domain] ?? budget["*"] ?? { limit: 0, days: 1 });
 
       // Get the SQLite database with cost data
       const aiPipeCostId = env.AIPIPE_COST.idFromName("default");
@@ -103,7 +103,8 @@ export default {
         if (action == "usage") return jsonResponse({ code: 200, data: await aiPipeCost.allUsage() });
         if (action == "token") {
           const email = url.searchParams.get("email") ?? payload.email;
-          const token = await createToken(email, env.AIPIPE_SECRET, salt[email] ? { salt: salt[email] } : {});
+          const tokenSalt = saltForEmail(email);
+          const token = await createToken(email, env.AIPIPE_SECRET, tokenSalt ? { salt: tokenSalt } : {});
           return jsonResponse({ code: 200, token });
         }
         if (action == "cost") {
@@ -116,7 +117,7 @@ export default {
       }
 
       // Reject if user's cost usage is at limit
-      const usage = await aiPipeCost.cost(email, days);
+      usage = await aiPipeCost.cost(email, days);
       if (usage >= limit) return jsonResponse({ code: 429, message: `Usage $${usage} / $${limit} in ${days} days` });
     }
 
@@ -128,6 +129,7 @@ export default {
       env,
       email,
       nativeKey: nativeKey ? token : null,
+      budget: nativeKey ? null : { limit, days, usage, remaining: limit - usage },
     });
     if (error) return jsonResponse(error);
 
@@ -220,14 +222,29 @@ async function validateToken(token, secret) {
   let payload;
   const secretBytes = new TextEncoder().encode(secret);
   try {
-    payload = (await jose.jwtVerify(token, secretBytes)).payload;
+    payload = (await jose.jwtVerify(token, secretBytes, {
+      audience: AIPIPE_TOKEN_AUDIENCE,
+      issuer: AIPIPE_TOKEN_ISSUER,
+    })).payload;
   } catch (err) {
-    return { error: `Bearer ${token} is invalid: ${err}` };
+    return { error: `Bearer token is invalid: ${err}` };
   }
-  if (salt[payload.email] && salt[payload.email] != payload.salt) {
-    return { error: `Bearer ${token} is no longer valid` };
+  if (!payload.email || typeof payload.email !== "string") {
+    return { error: "Bearer token is invalid: missing email" };
+  }
+  if (!payload.exp) {
+    return { error: "Bearer token is invalid: missing expiry" };
+  }
+  const tokenSalt = saltForEmail(payload.email);
+  if (tokenSalt && tokenSalt != payload.salt) {
+    return { error: "Bearer token is no longer valid" };
   }
   return payload;
+}
+
+function saltForEmail(email) {
+  const domain = "@" + email.split("@").at(-1);
+  return salt[email] ?? salt[domain] ?? salt["*"];
 }
 
 // Return { token } given valid Google credentials
@@ -239,10 +256,9 @@ async function tokenFromCredential(credential, secret) {
   });
   if (!payload.email_verified) return { code: 401, message: "Invalid Google credentials" };
 
-  const params = { email: payload.email };
-  if (salt[payload.email]) params.salt = salt[payload.email];
-  const token = await new jose.SignJWT(params)
-    .setProtectedHeader({ alg: "HS256" })
-    .sign(new TextEncoder().encode(secret));
+  if (!payload.email || typeof payload.email !== "string") return { code: 401, message: "Invalid Google credentials" };
+  const tokenSalt = saltForEmail(payload.email);
+  const params = tokenSalt ? { salt: tokenSalt } : {};
+  const token = await createToken(payload.email, secret, params);
   return { code: 200, token, ...payload };
 }
